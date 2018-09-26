@@ -124,6 +124,16 @@ typedef enum
     DEST_FULL = 2               /* Created, fully copied */
 } dest_status_t;
 
+/* Status of had link creation */
+typedef enum
+{
+    HARDLINK_OK = 0,            /**< Hardlink was created successfully */
+    HARDLINK_CACHED,            /**< Hardlink was added to the cache */
+    HARDLINK_NOTLINK,           /**< This is not a hard link */
+    HARDLINK_UNSUPPORTED,       /**< VFS doesn't support hard links */
+    HARDLINK_ERROR              /**< Hard link creation error */
+} hardlink_status_t;
+
 /*
  * This array introduced to avoid translation problems. The former (op_names)
  * is assumed to be nouns, suitable in dialog box titles; this one should
@@ -332,7 +342,7 @@ is_in_linklist (const GSList * lp, const vfs_path_t * vpath, const struct stat *
  * and a hardlink was successfully made
  */
 
-static gboolean
+static hardlink_status_t
 check_hardlinks (const vfs_path_t * src_vpath, const struct stat *src_stat,
                  const vfs_path_t * dst_vpath)
 {
@@ -340,8 +350,10 @@ check_hardlinks (const vfs_path_t * src_vpath, const struct stat *src_stat,
     ino_t ino = src_stat->st_ino;
     dev_t dev = src_stat->st_dev;
 
-    if (src_stat->st_nlink < 2 || (vfs_file_class_flags (src_vpath) & VFSF_NOLINKS) != 0)
-        return FALSE;
+    if (src_stat->st_nlink < 2)
+        return HARDLINK_NOTLINK;
+    if ((vfs_file_class_flags (src_vpath) & VFSF_NOLINKS) != 0)
+        return HARDLINK_UNSUPPORTED;
 
     lnk = (struct link *) is_in_linklist (linklist, src_vpath, src_stat);
     if (lnk != NULL)
@@ -368,13 +380,13 @@ check_hardlinks (const vfs_path_t * src_vpath, const struct stat *src_stat,
 
                 if (dst_name_class == p_class && mc_stat (lnk->dst_vpath, &link_stat) == 0 &&
                     mc_link (lnk->dst_vpath, dst_vpath) == 0)
-                    return TRUE;
+                    return HARDLINK_OK;
             }
         }
 
         message (D_ERROR, MSG_ERROR, _("Cannot make the hardlink\n%s\nto\n%s"),
                  vfs_path_as_str (dst_vpath), vfs_path_as_str (lnk->dst_vpath));
-        return FALSE;
+        return HARDLINK_ERROR;
     }
 
     lnk = g_try_new (struct link, 1);
@@ -391,7 +403,7 @@ check_hardlinks (const vfs_path_t * src_vpath, const struct stat *src_stat,
         linklist = g_slist_prepend (linklist, lnk);
     }
 
-    return FALSE;
+    return HARDLINK_CACHED;
 }
 
 /* --------------------------------------------------------------------------------------------- */
@@ -2191,7 +2203,7 @@ copy_file_file (file_op_total_context_t * tctx, file_op_context_t * ctx,
     if (!ctx->do_append)
     {
         /* Check the hardlinks */
-        if (!ctx->follow_links && check_hardlinks (src_vpath, &src_stat, dst_vpath))
+        if (!ctx->follow_links && check_hardlinks (src_vpath, &src_stat, dst_vpath) == HARDLINK_OK)
         {
             /* We have made a hardlink - no more processing is necessary */
             return_status = FILE_CONT;
@@ -2694,7 +2706,7 @@ copy_dir_dir (file_op_total_context_t * tctx, file_op_context_t * ctx, const cha
     /* Hmm, hardlink to directory??? - Norbert */
     /* FIXME: In this step we should do something in case the destination already exist */
     /* Check the hardlinks */
-    if (ctx->preserve && check_hardlinks (src_vpath, &cbuf, dst_vpath))
+    if (ctx->preserve && check_hardlinks (src_vpath, &cbuf, dst_vpath) == HARDLINK_OK)
     {
         /* We have made a hardlink - no more processing is necessary */
         goto ret_fast;
